@@ -89,7 +89,9 @@ h1 span{font-family:var(--font-mono);font-weight:700;letter-spacing:-.02em}
 .btn.quiet{border-color:transparent;background:transparent;color:var(--muted)}
 .btn.quiet:hover:not(:disabled){color:var(--ink);border-color:var(--line)}
 
-.fields{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px 16px;margin-top:14px}
+.fields{display:grid;grid-template-columns:minmax(0,.8fr) minmax(0,1.3fr) minmax(0,1.3fr) minmax(0,1.5fr);gap:12px 16px;margin-top:14px}
+select{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:7px 10px;width:100%;min-width:0;height:38px}
+.tag{font-size:12px;font-weight:500;color:var(--accent);background:var(--accent-soft);border-radius:5px;padding:3px 7px;white-space:nowrap}
 .field{display:grid;gap:5px;min-width:0}
 .field>span,.lbl{font-size:12.5px;color:var(--muted);font-weight:500}
 .field.wide{grid-column:1/-1}
@@ -241,18 +243,33 @@ body.is-exporting .lockable{opacity:.5;pointer-events:none}
           <div class="field"><span>每段長度（秒）</span>
             <div class="range2"><input class="num" type="number" id="setMin" min="5" max="170" step="5" value="30" aria-label="最短秒數"><i>到</i><input class="num" type="number" id="setMax" min="10" max="180" step="5" value="90" aria-label="最長秒數"></div>
           </div>
-          <div class="field"><span>標題語言</span>
-            <div class="seg fill" role="radiogroup" aria-label="標題語言">
-              <label><input type="radio" name="lang" id="langT" value="zh-Hant" checked><span>繁體</span></label>
-              <label><input type="radio" name="lang" id="langS" value="zh-Hans"><span>简体</span></label>
-            </div>
-          </div>
-          <label class="field wide"><span>補充說明（可不填）</span><textarea id="setHint" rows="1" placeholder="例：這集是訪談，優先找來賓講親身經歷的段落；標題不要用問句"></textarea></label>
+          <label class="field"><span>標題語言</span>
+            <select id="setLang">
+              <option value="auto">跟字幕語言相同</option>
+              <option value="zh-Hant">繁體中文</option><option value="zh-Hans">简体中文</option>
+              <option value="English">English</option><option value="日本語">日本語</option><option value="한국어">한국어</option>
+              <option value="Español">Español</option><option value="Français">Français</option><option value="Deutsch">Deutsch</option>
+              <option value="Português">Português</option><option value="Русский">Русский</option><option value="Tiếng Việt">Tiếng Việt</option>
+              <option value="Bahasa Indonesia">Bahasa Indonesia</option><option value="ไทย">ไทย</option><option value="العربية">العربية</option><option value="हिन्दी">हिन्दी</option>
+            </select></label>
+          <label class="field"><span>節目類型</span>
+            <select id="setType">
+              <option value="auto">自動判斷</option>
+              <option value="politics">時政評論／新聞分析</option>
+              <option value="interview">訪談／對談</option>
+              <option value="entertainment">娛樂／綜藝／搞笑</option>
+              <option value="health">養生健康／生活</option>
+              <option value="knowledge">知識科普／歷史故事</option>
+              <option value="finance">財經／商業</option>
+              <option value="howto">教學／技能</option>
+              <option value="other">其他</option>
+            </select></label>
+          <label class="field wide"><span>補充說明（可不填）</span><textarea id="setHint" rows="1" placeholder="例：這集主要談某個事件，優先找有明確預測的段落；標題不要用問句"></textarea></label>
         </div>
         <div class="run">
           <button class="btn primary" id="btnFind" type="button">找出精彩片段</button>
           <button class="btn" id="btnStop" type="button" hidden>停止</button>
-          <div class="status" id="findStatus" role="status" aria-live="polite">Claude 會讀完整份字幕，用的是你自己帳號的額度。</div>
+          <div class="status" id="findStatus" role="status" aria-live="polite">Claude 會讀完整份字幕，依節目類型判斷哪些段落適合剪。用的是你自己帳號的額度。</div>
           <button class="btn small quiet" id="btnManual" type="button">改用其他 AI</button>
         </div>
         <div class="manual" id="manual" hidden>
@@ -435,7 +452,8 @@ let uid = 1;
 const state = {
   cues: DEMO_CUES, subName: '', isDemo: true,
   clips: [], activeId: null, sort: 'score',
-  settings: { count:10, min:30, max:90, lang:'zh-Hant' },
+  settings: { count:10, min:30, max:90, lang:'auto', type:'auto' },
+  subLang: 'zh-Hant', programType: '',
   lastStyle: { ...DEFAULT_STYLE },
   video: { loaded:false, name:'', duration:0, url:'' },
   fakeT: 0, exporting: false, finding: false,
@@ -533,6 +551,7 @@ async function loadSubFile(file) {
   }
   for (const c of state.clips) if (c.out) URL.revokeObjectURL(c.out.url);
   state.cues = cues; state.subName = file.name; state.isDemo = false;
+  state.subLang = detectLang(cues); state.programType = ''; FONT_STACK = stackFor(state.subLang); fitCache.clear();
   state.clips = []; state.activeId = null; state.fakeT = 0;
   $('#demoBanner').hidden = true;
   setFindStatus('', $('#btnFind').hidden ? '字幕讀好了。照下面三個步驟，用任何 AI 找片段。' : '字幕讀好了。按「找出精彩片段」讓 Claude 開始挑。');
@@ -554,27 +573,48 @@ const ERR_COPY = {
   empty_completion: 'Claude 沒有回覆內容。再按一次；如果一直失敗，把片段數量調少。',
   upstream_error: '連線中斷了。再按一次試試。',
 };
+const TYPES = {
+  politics: ['時政評論／新聞分析', '觀眾想要的是「看懂局勢」和「比別人先知道」。優先選：(1) 對熱門人物或事件給出明確判斷或預測的段落，例如接下來會怎樣、誰佔上風、為什麼；(2) 多數人不知道的內幕、細節或背景；(3) 用一個比喻、一段歷史類比或一組數字把複雜局勢講清楚的段落；(4) 指出流行說法哪裡不對的反向觀點；(5) 和觀眾切身利益有關的影響，例如錢、物價、安全、移民、工作。片段要從拋出問題或結論的那一句開始，不要從背景鋪陳開始；要包含「主張加上至少一個理由或證據」，結束在下結論或金句的地方。避開：只有情緒沒有資訊的段落、需要前文才知道「他」「這件事」指誰的段落、單純複述新聞經過的段落。'],
+  interview: ['訪談／對談', '優先選：來賓的親身經歷和第一手細節、情緒明顯的時刻、主持人尖銳提問加上來賓的正面回答、出人意料的坦白或立場反轉。盡量從那個問題或來賓最抓人的一句話開始，到回答講完為止，問和答都要完整。避開：客套話、兩人互相附和、沒有結論的閒聊。'],
+  entertainment: ['娛樂／綜藝／搞笑', '優先選：笑點、名場面、反轉和情緒最高的時刻。鋪墊和包袱要一起留下，但鋪墊越短越好；寧可短而密，不要為了湊長度拖長。你只看得到字幕，所以避開明顯要靠畫面才成立的段落。'],
+  health: ['養生健康／生活', '優先選：具體、馬上能照做的方法，對常見誤區的糾正，多數人不知道的知識點，有明確步驟或數字的段落。從問題或誤區開始，到方法講完為止。避開含糊的泛泛之談。標題不可以宣稱治癒或保證療效。'],
+  knowledge: ['知識科普／歷史故事', '優先選：反直覺的事實、完整的小故事（起因、轉折、結果都在）、一句話就能引起好奇的謎題和它的答案。開頭要有懸念，結尾要有交代。'],
+  finance: ['財經／商業', '優先選：具體數字和趨勢判斷、對一般人收入和支出的影響、真實案例、常見的理財誤區。標題不可以寫成保證獲利的投資建議。'],
+  howto: ['教學／技能', '一段只講一個技巧或一個常見錯誤，要有清楚的步驟或前後對比，看完就能照做。'],
+  other: ['其他', '依照下面的基本要求，選資訊密度或情緒強度最高、最能單獨成立的段落。'],
+};
 function buildPrompt(lines, want, avoid) {
-  const { min, max, lang } = state.settings;
-  const langName = lang === 'zh-Hans' ? '简体中文' : '繁體中文';
+  const { min, max, lang, type } = state.settings;
   const hint = $('#setHint').value.trim();
-  return `你是中文 YouTube Shorts 的資深剪輯企劃。下面是一支長影片的字幕，每行的格式是「編號|開始時間|字幕內容」。
+  const simplified = lang === 'zh-Hans' || (lang === 'auto' && state.subLang === 'zh-Hans');
+  const noteLang = simplified ? '简体中文' : '繁體中文';
+  const titleLang = lang === 'auto' ? '和字幕相同的語言（字幕是中文時，沿用字幕本身的繁體或簡體）' : lang === 'zh-Hant' ? '繁體中文' : lang === 'zh-Hans' ? '简体中文' : lang;
+  const typeBlock = TYPES[type]
+    ? `這支影片的節目類型是「${TYPES[type][0]}」。選段邏輯：${TYPES[type][1]}`
+    : `先通讀字幕，判斷這支影片屬於下面哪一類（混合型以主要的為準），再套用那一類的選段邏輯：\n${Object.values(TYPES).map(t => `- ${t[0]}：${t[1]}`).join('\n')}`;
+  return `你是資深的 YouTube Shorts 剪輯企劃，熟悉各類節目和各語種觀眾的觀看習慣。下面是一支長影片的字幕，可能是任何語言，每行的格式是「編號|開始時間|字幕內容」。
 
-任務：找出 ${want} 段最適合剪成 Shorts 的精彩片段。
+任務：找出 ${want} 段最適合剪成 Shorts 的片段。從哪一句開始、到哪一句結束，要依內容來決定，不要平均切。
 
-選段標準：
+【第一步：依節目類型決定選什麼】
+${typeBlock}
+
+【第二步：每一段都要符合的基本要求】
 - 單獨看就能看懂，不需要前後文；
-- 開頭三秒內要有鉤子（驚人的說法、反問、衝突、懸念、具體數字或例子）；
-- 內容是一個完整的觀點或一個小故事，開頭和結尾都落在一句話的邊界上，不要斷在半句；
-- 每段長度 ${min} 到 ${max} 秒（用開始那行的時間和結束那行之後一行的時間估算）；
-- 片段之間不要重疊，話題不要重複，盡量分散在影片的不同位置。
+- 第一句就要抓住人：結論、反問、衝突、懸念、具體數字或例子，不能從寒暄或鋪陳開始；
+- 是一個完整的觀點或一個小故事，開頭和結尾都落在一句話的邊界上，不要斷在半句；
+- 長度 ${min} 到 ${max} 秒（用開始那行的時間和結束那行之後一行的時間估算）。在這個範圍內以內容完整為準：一個重點講完就收，不要為了湊長度多帶無關的話；
+- 片段之間不要重疊，話題不要重複，盡量分散在影片的不同位置；
+- 跳過片頭片尾、開場寒暄、廣告和贊助口播、商品或會員推廣、呼籲訂閱按讚的段落。
 ${avoid.length ? `- 下列時間範圍已經選過了，請避開：${avoid.join('、')}。\n` : ''}
-標題要求：用${langName}，18 個字以內，口語、有懸念，要和片段內容相符，不要加引號、書名號或井字標籤。
-reason 也用${langName}，一句話說明這段為什麼值得剪、鉤子是什麼。
-${hint ? `\n剪輯人員的補充說明：${hint}\n` : ''}
-只回覆一個 JSON 陣列，不要有其他文字。每個元素的格式：
-{"start_id": 開始那行的編號, "end_id": 結束那行的編號（包含這一行）, "title": "標題", "reason": "理由", "score": 1 到 10 的整數推薦分數}
-範例：[{"start_id":12,"end_id":27,"title":"……","reason":"……","score":8}]
+【標題】
+用${titleLang}寫。中文、日文、韓文 18 個字以內，其他語言 9 個單詞以內。口語、有懸念，但不可以誇大，也不可以說出片段裡沒有的內容。不要加引號、書名號或井字標籤。
+${hint ? `\n【剪輯人員的補充說明】\n${hint}\n` : ''}
+【回覆格式】
+只回覆一個 JSON 物件，不要有其他文字：
+{"program_type": "你判斷的節目類型", "clips": [{"start_id": 開始那行的編號, "end_id": 結束那行的編號（包含這一行）, "title": "標題", "angle": "看點，2 到 6 個字，例如 預測、內幕、金句、反轉、數據、親身經歷、實用方法", "reason": "一句話說明觀眾為什麼會看完這段", "score": 1 到 10 的整數推薦分數}]}
+program_type、angle 和 reason 都用${noteLang}寫。
+範例：{"program_type":"時政評論／新聞分析","clips":[{"start_id":12,"end_id":27,"title":"……","angle":"預測","reason":"……","score":8}]}
 
 字幕：
 ${lines.join('\n')}`;
@@ -630,6 +670,7 @@ function collectClips(arr, got) {
       start, end,
       title: String(pickKey(r, ['title', '標題', '标题', 'headline', 'name']) || '').trim() || '未命名片段',
       reason: String(pickKey(r, ['reason', '理由', 'why', 'hook', 'description']) || '').trim(),
+      angle: String(pickKey(r, ['angle', '看點', '看点', 'tag']) || '').trim().slice(0, 16),
       score: clamp(Math.round(Number(pickKey(r, ['score', 'rating', '分數', '分数']))) || 0, 0, 10),
     });
   }
@@ -675,7 +716,7 @@ async function findClips() {
   const t0 = Date.now(); let found = 0, part = 0;
   const tick = () => setFindStatus('', `<span class="dots">Claude 正在讀字幕${chunks.length > 1 ? `（第 ${part + 1}／${chunks.length} 部分）` : ''}</span>　已經 ${Math.round((Date.now() - t0) / 1000)} 秒${found ? `，目前找到 ${found} 段` : ''}`);
   tick(); findTimer = setInterval(tick, 1000);
-  const got = []; let err = null;
+  const got = []; let err = null, ptype = '';
   try {
     for (part = 0; part < chunks.length; part++) {
       const want = chunks.length > 1 ? Math.ceil(n / chunks.length) + 1 : n;
@@ -684,12 +725,14 @@ async function findClips() {
         signal: findCtl.signal, cache: false,
         onText: ({ text }) => { found = base + (text.match(/"title"/g) || []).length; },
       });
+      if (arr && !Array.isArray(arr) && arr.program_type && !ptype) ptype = String(arr.program_type).trim().slice(0, 30);
       collectClips(arr, got); found = got.length;
     }
   } catch (e) { err = e || { code: 'upstream_error' }; }
   clearInterval(findTimer); state.finding = false;
   $('#btnFind').disabled = false; $('#btnStop').hidden = true;
   const count = applyFound(got, kept, n);
+  if (count && ptype) state.programType = ptype;
   if (err && err.code !== 'cancelled') {
     setFindStatus('bad', (ERR_COPY[err.code] || ERR_COPY.upstream_error) + (count ? `（已先列出找到的 ${count} 段）` : ''));
     if (NO_CLAUDE.includes(err.code)) showManual(false);
@@ -698,7 +741,7 @@ async function findClips() {
   } else if (!count) {
     setFindStatus('bad', 'Claude 沒有找到符合條件的片段。試著放寬每段長度，或把數量調少。');
   } else {
-    setFindStatus('ok', `找到 ${count} 段。勾選想要的片段，標題和時間都可以改。${kept.length ? '之前勾選的片段有保留。' : ''}`);
+    setFindStatus('ok', `${ptype ? `AI 判斷這是「${esc(ptype)}」類節目。` : ''}找到 ${count} 段。勾選想要的片段，標題和時間都可以改。${kept.length ? '之前勾選的片段有保留。' : ''}`);
   }
   renderAll();
   if (count) seekToActiveStart();
@@ -759,7 +802,9 @@ function importManual() {
   }
   const count = applyFound(got, kept, n);
   if (!count) { st.className = 'status bad'; st.textContent = '這些片段和已經勾選的片段重疊，沒有新增。'; return; }
-  st.className = 'status ok'; st.textContent = `讀到 ${count} 段。勾選想要的片段，標題和時間都可以改。`;
+  const pm = raw.match(/"program_type"\s*:\s*"([^"]{1,40})"/);
+  if (pm) state.programType = pm[1].trim();
+  st.className = 'status ok'; st.textContent = `${pm ? `AI 判斷這是「${pm[1].trim()}」類節目。` : ''}讀到 ${count} 段。勾選想要的片段，標題和時間都可以改。`;
   $('#manualReply').value = '';
   renderAll(); seekToActiveStart();
 }
@@ -804,6 +849,7 @@ function cardHTML(c, i) {
       <span class="tc">${fmt(c.start)}<i>→</i>${fmt(c.end)}</span>
       <span class="dur">${Math.round(c.end - c.start)} 秒</span>
       ${c.score ? `<span class="score" title="AI 給的推薦分數">${c.score}<small>/10</small></span>` : ''}
+      ${c.angle ? `<span class="tag" title="這段的看點">${esc(c.angle)}</span>` : ''}
       <span class="chips">${chipsHTML(c)}</span>
     </div>
     <input class="title-in" type="text" id="t-${c.id}" data-act="title" value="${esc(c.title)}" maxlength="60" aria-label="短片標題" placeholder="短片標題">
@@ -864,7 +910,42 @@ function onTimesChanged(c, edge) {
 const cv = $('#cv'), mainCtx = cv.getContext('2d');
 let ctx = mainCtx;   // 快速剪片時會暫時換成背景畫布
 const v = $('#srcVideo');
-const FONT_STACK = '"PingFang TC","PingFang SC","Microsoft JhengHei","Microsoft YaHei","Noto Sans TC","Noto Sans CJK TC","Heiti TC",sans-serif';
+const STACKS = {
+  'zh-Hant': '"PingFang TC","Microsoft JhengHei","Noto Sans TC","Noto Sans CJK TC","Heiti TC"',
+  'zh-Hans': '"PingFang SC","Microsoft YaHei","Noto Sans SC","Noto Sans CJK SC","Heiti SC"',
+  ja: '"Hiragino Sans","Hiragino Kaku Gothic ProN","Yu Gothic","Meiryo","Noto Sans JP","Noto Sans CJK JP"',
+  ko: '"Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR","Noto Sans CJK KR"',
+};
+function stackFor(lang) {     // 字幕語言的字型排最前面，其餘當備援，瀏覽器會自動替其他文字找字型
+  const first = STACKS[lang] || '"Helvetica Neue","Segoe UI",Arial';
+  return first + ',' + Object.keys(STACKS).filter(k => k !== lang).map(k => STACKS[k]).join(',') + ',sans-serif';
+}
+let FONT_STACK = stackFor('zh-Hant');
+function detectLang(cues) {
+  const text = cues.slice(0, 400).map(c => c.text).join('');
+  const count = re => (text.match(re) || []).length;
+  const total = Math.max(1, count(/\p{L}/gu));
+  if (count(/[\p{Script=Hiragana}\p{Script=Katakana}]/gu) / total > 0.1) return 'ja';
+  if (count(/\p{Script=Hangul}/gu) / total > 0.3) return 'ko';
+  if (count(/\p{Script=Han}/gu) / total > 0.3) {
+    const S = '这们为说时会对国发过还后里么没让给个来样现点问间门见长开关东车马', T = '這們為說時會對國發過還後裡麼沒讓給個來樣現點問間門見長開關東車馬';
+    let a = 0, b = 0; for (const ch of text) { if (S.includes(ch)) a++; else if (T.includes(ch)) b++; }
+    return a > b ? 'zh-Hans' : 'zh-Hant';
+  }
+  if (count(/\p{Script=Arabic}/gu) / total > 0.3) return 'ar';
+  if (count(/\p{Script=Hebrew}/gu) / total > 0.3) return 'he';
+  if (count(/\p{Script=Cyrillic}/gu) / total > 0.3) return 'cyrl';
+  if (count(/\p{Script=Thai}/gu) / total > 0.3) return 'th';
+  if (count(/\p{Script=Devanagari}/gu) / total > 0.3) return 'hi';
+  return 'latin';
+}
+const LANG_LABEL = { 'zh-Hant': '繁體中文', 'zh-Hans': '簡體中文', ja: '日文', ko: '韓文', ar: '阿拉伯文', he: '希伯來文', cyrl: '俄文等西里爾字母語言', th: '泰文', hi: '印地文等天城文語言', latin: '英文或其他拉丁字母語言' };
+const segmenter = (typeof Intl !== 'undefined' && Intl.Segmenter) ? new Intl.Segmenter(undefined, { granularity: 'word' }) : null;
+function tokenize(text) {     // 依「詞」斷行，各種語言都不會把一個詞切成兩半
+  if (segmenter) return Array.from(segmenter.segment(text), x => x.segment);
+  return text.match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]|[\p{L}\p{M}\p{N}'’%.\-]+|\s+|[\s\S]/gu) || [];
+}
+const RTL = /[\p{Script=Arabic}\p{Script=Hebrew}]/u;
 const ph = document.createElement('canvas'); ph.width = 1280; ph.height = 720;
 (function drawPlaceholder() {
   const c = ph.getContext('2d');
@@ -884,23 +965,29 @@ function cover(sw, sh, dw, dh, fx) {
   const h = sw / da; return [0, (sh - h) / 2, sw, h];
 }
 function wrapText(text, maxW) {
-  const toks = text.match(/[A-Za-z0-9][A-Za-z0-9'’%.,\-]*|\s+|[\s\S]/gu) || [];
-  const noStart = /^[，。！？、：；）」』】》〉,.!?:;)\]…—%]/;
+  const noStart = /^[，。！？、：；）」』】》〉,.!?:;)\]…—%'’”»]/, noEnd = /[（「『【《〈(\[“«¿¡]$/;
   const lines = []; let cur = '';
-  for (const tk of toks) {
+  for (const tk of tokenize(text)) {
     if (/^\s+$/.test(tk)) { if (cur) cur += ' '; continue; }
-    if (cur && ctx.measureText(cur + tk).width > maxW && !noStart.test(tk)) { lines.push(cur.trimEnd()); cur = tk; }
-    else cur += tk;
+    if (cur && ctx.measureText(cur + tk).width > maxW && !noStart.test(tk)) {
+      let line = cur.trimEnd(), carry = '';
+      const m = line.match(noEnd); if (m && line.length > 1) { carry = m[0]; line = line.slice(0, -carry.length).trimEnd(); }
+      lines.push(line); cur = carry + tk;
+    } else cur += tk;
   }
   if (cur.trim()) lines.push(cur.trimEnd());
   return lines;
 }
 const fitCache = new Map();
 function fitText(text, maxW, size, maxLines) {
-  const key = `${text}|${maxW}|${size}|${maxLines}`;
+  const key = `${text}|${maxW}|${size}|${maxLines}|${FONT_STACK.length}`;
   let hit = fitCache.get(key); if (hit) return hit;
   let s = size, lines = [];
-  for (let i = 0; i < 7; i++) { ctx.font = `900 ${s}px ${FONT_STACK}`; lines = wrapText(text, maxW); if (lines.length <= maxLines) break; s = Math.round(s * 0.9); }
+  for (let i = 0; i < 8; i++) {      // 行數太多，或有一個詞比整行還寬，就縮小字級
+    ctx.font = `900 ${s}px ${FONT_STACK}`; lines = wrapText(text, maxW);
+    if (lines.length <= maxLines && lines.every(l => ctx.measureText(l).width <= maxW * 1.06)) break;
+    s = Math.round(s * 0.9);
+  }
   if (lines.length > maxLines) lines = lines.slice(0, maxLines);
   else if (lines.length > 1) {         // 把各行長度拉平，避免最後一行只剩一兩個字
     const n = lines.length; let lo = maxW * 0.4, hi = maxW;
@@ -911,11 +998,40 @@ function fitText(text, maxW, size, maxLines) {
   if (fitCache.size > 400) fitCache.clear();
   fitCache.set(key, hit); return hit;
 }
+const pageCache = new Map();
+function subFit(cue, t, size) {   // 一句字幕太長時不縮小字，改成分幾頁依序顯示，每頁最多兩行
+  const key = `${cue.start}|${cue.text}|${size}|${FONT_STACK.length}`;
+  let pages = pageCache.get(key);
+  if (!pages) {
+    ctx.font = `900 ${size}px ${FONT_STACK}`;
+    const P = Math.ceil(wrapText(cue.text, 800).length / 2);
+    pages = [];
+    if (P > 1) {
+      const noStart = /^[\s，。！？、：；）」』】》〉,.!?:;)\]…—%'’”»]/, total = cue.text.length;
+      let cur = '', used = 0;
+      for (const tk of tokenize(cue.text)) {
+        if (cur.trim() && pages.length < P - 1 && used + cur.length >= total * (pages.length + 1) / P && !noStart.test(tk)) {
+          used += cur.length; pages.push({ text: cur.trim(), until: used / total }); cur = '';
+        }
+        cur += tk;
+      }
+      if (cur.trim()) pages.push({ text: cur.trim(), until: 1 });
+    }
+    if (!pages.length) pages.push({ text: cue.text, until: 1 });
+    pages[pages.length - 1].until = 1;
+    if (pageCache.size > 600) pageCache.clear();
+    pageCache.set(key, pages);
+  }
+  const frac = clamp((t - cue.start) / Math.max(0.01, cue.end - cue.start), 0, 0.9999);
+  const pg = pages.find(x => frac < x.until) || pages[pages.length - 1];
+  return fitText(pg.text, 800, size, 2);
+}
 function drawLines(lines, size, cx, top, fill) {
   ctx.font = `900 ${size}px ${FONT_STACK}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
   const lh = size * 1.24;
   lines.forEach((ln, i) => {
     const y = top + lh * (i + 0.5);
+    ctx.direction = RTL.test(ln) ? 'rtl' : 'ltr';
     ctx.lineWidth = size * 0.2; ctx.strokeStyle = 'rgba(0,0,0,.92)'; ctx.strokeText(ln, cx, y);
     ctx.fillStyle = fill; ctx.fillText(ln, cx, y);
   });
@@ -957,7 +1073,7 @@ function drawFrame(src, sw, sh, st, title, t) {
   if (st.burnSub) {
     const cue = cueAt(t);
     if (cue) {
-      const f = fitText(cue.text, 800, st.subSize, 3);
+      const f = subFit(cue, t, st.subSize);
       const bh = f.size * 1.24 * f.lines.length;
       const top = subTop != null && subTop + bh <= H * 0.8 ? subTop : Math.round(H * 0.74 - bh);
       drawLines(f.lines, f.size, W / 2, top, '#FFFFFF');
@@ -1249,7 +1365,7 @@ let toastTimer = null;
 function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 3200); }
 function renderSubMeta() {
   if (state.isDemo) { $('#subMeta').textContent = `示範字幕，${state.cues.length} 句，長度 ${fmt(totalLen(), 0)}`; return; }
-  $('#subMeta').textContent = `${state.cues.length} 句，長度 ${fmt(totalLen(), 0)}`;
+  $('#subMeta').textContent = `${state.cues.length} 句，長度 ${fmt(totalLen(), 0)}，${LANG_LABEL[state.subLang] || ''}`;
   $('#subName').innerHTML = `<strong>${esc(state.subName)}</strong>`;
 }
 function renderAll() { renderSubMeta(); renderClips(); renderOuts(); syncStylePanel(); renderManual(); requestDraw(); }
@@ -1265,7 +1381,10 @@ bindDrop($('#subDrop'), $('#subFile'), loadSubFile);
 bindDrop($('#vidDrop'), $('#vidFile'), loadVideo);
 
 $('#setCount').value = state.settings.count; $('#setMin').value = state.settings.min; $('#setMax').value = state.settings.max;
-document.querySelectorAll('input[name=lang]').forEach(r => { r.checked = r.value === state.settings.lang; r.addEventListener('change', () => { state.settings.lang = r.value; persist(); }); });
+for (const [id, key] of [['#setLang', 'lang'], ['#setType', 'type']]) {
+  const el = $(id); el.value = state.settings[key]; if (el.value !== state.settings[key]) { el.value = 'auto'; state.settings[key] = 'auto'; }
+  el.addEventListener('change', () => { state.settings[key] = el.value; persist(); });
+}
 function readSettings() {
   const s = state.settings;
   s.count = clamp(Math.round(+$('#setCount').value) || 10, 1, 20);
